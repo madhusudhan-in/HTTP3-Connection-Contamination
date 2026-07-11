@@ -8,6 +8,8 @@ An advanced exploitation framework for HTTP/3 connection contamination vulnerabi
 
 The **offensive_tool.py** is a production-ready exploitation engine designed for authorized penetration testers and security researchers. It implements multiple attack vectors against HTTP/3 connection contamination vulnerabilities with comprehensive reporting and evidence collection.
 
+This tool operates at the HTTP layer over HTTP/3 transport; it does not perform QUIC frame-level manipulation. For connection-migration DoS testing, low-level QUIC libraries such as aioquic would be required
+
 ### Key Capabilities
 
 **4 Core Exploitation Vectors**
